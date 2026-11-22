@@ -398,16 +398,17 @@ check("…e fica estável", quietStats(st) && moves.length === 1, JSON.stringify
     { id: "c", title: "contrato.pdf", url: `${H}/bbbbbbbb-2222-3333-4444-555555555555/contrato.pdf`, mimetype: "application/pdf" },
   ];
   st = await casc();
-  check("imagem do texto e imagem anexada viram arquivos do cofre referenciados na nota",
-    read() === "texto\n\n![[foto teste 11111111.png]]\n\nfim ![[Colada.png]] e [[Nota]]\n\n![[image aaaaaaaa.png]]" &&
-    downloads.length === d0 + 2 && downloads.includes(inl) && fs.existsSync(abs("image aaaaaaaa.png")) && pushes.length === 0 && !st.errors.length,
+  check("imagem do texto, imagem anexada e documento anexado viram arquivos do cofre referenciados na nota",
+    read() === "texto\n\n![[foto teste 11111111.png]]\n\nfim ![[Colada.png]] e [[Nota]]\n\n![[image aaaaaaaa.png]]\n![[contrato bbbbbbbb.pdf]]" &&
+    downloads.length === d0 + 3 && downloads.includes(inl) && fs.existsSync(abs("image aaaaaaaa.png")) && fs.existsSync(abs("contrato bbbbbbbb.pdf")) && pushes.length === 0 && !st.errors.length,
     JSON.stringify(read()) + JSON.stringify(downloads));
   st = await casc();
-  check("…e fica estável (nada é reenviado)", quietStats(st) && pushes.length === 0 && downloads.length === d0 + 2, JSON.stringify(st));
+  check("…e fica estável (nada é reenviado)", quietStats(st) && pushes.length === 0 && downloads.length === d0 + 3, JSON.stringify(st));
   fs.appendFileSync(abs(index[X.id].path), "\nlinha nova\n");
   st = await casc();
   check("edição local volta ao ClickUp com o endereço da imagem, sem a anexada",
     pushes.length === 1 && pushes[0].ch.body!.includes(`![foto teste 11111111.png](${inl})`) && !pushes[0].ch.body!.includes("aaaaaaaa") &&
+    !pushes[0].ch.body!.includes("contrato") &&
     pushes[0].ch.body!.includes("![[Colada.png]]") && pushes[0].ch.body!.endsWith("linha nova") && read().includes("![[image aaaaaaaa.png]]"),
     JSON.stringify(pushes.map((p) => p.ch.body)));
   st = await casc();
@@ -415,7 +416,7 @@ check("…e fica estável", quietStats(st) && moves.length === 1, JSON.stringify
   attach[X.id] = attach[X.id].slice(0, 1);
   X.date_updated = "9";
   st = await casc();
-  check("anexo removido no card sai da nota, sem mexer no resto", !read().includes("aaaaaaaa") && read().includes("![[foto teste 11111111.png]]") &&
+  check("anexo removido no card sai da nota, sem mexer no resto", !read().includes("aaaaaaaa") && !read().includes("contrato") && read().includes("![[foto teste 11111111.png]]") &&
     read().endsWith("linha nova") && pushes.length === 0, JSON.stringify(read()));
   st = await casc();
   check("…e fica estável", quietStats(st) && pushes.length === 0, JSON.stringify(st));
@@ -439,6 +440,23 @@ check("…e fica estável", quietStats(st) && moves.length === 1, JSON.stringify
     read().endsWith("depois, editado no ClickUp") && downloads.length === nd && uploads.length === 1 && pushes.length === 0, JSON.stringify(read()));
   st = await casc();
   check("…e fica estável", quietStats(st) && pushes.length === 0 && uploads.length === 1, JSON.stringify(st));
+
+  // documento colocado na nota no Obsidian → sobe como anexo do card; o texto do card não muda
+  fs.writeFileSync(abs("Planilha.xlsx"), "1234567");
+  fs.appendFileSync(abs(index[X.id].path), "\n\n![[Planilha.xlsx]]\n");
+  st = await casc();
+  check("documento do Obsidian sobe como anexo, sem mexer no texto do card",
+    uploads.length === 2 && uploads[1].fileName === "Planilha.xlsx" && uploads[1].size === 7 && pushes.length === 0 &&
+    read().endsWith("![[Planilha.xlsx]]") && st.uploaded === 1 && !st.errors.length, JSON.stringify(st) + JSON.stringify(pushes.map((p) => p.ch.body)));
+  // o ClickUp passa a listar o anexo: a nota não ganha cópia nem link repetido
+  attach[X.id] = [...attach[X.id], { id: "d", title: "Planilha.xlsx", url: `${H}/cccccccc-2222-3333-4444-000000000002/Planilha.xlsx?authz_token=q`, mimetype: "application/vnd.ms-excel" }];
+  X.date_updated = "15";
+  const nd2 = downloads.length;
+  st = await casc();
+  check("…e o anexo listado pelo ClickUp não duplica o arquivo nem o link",
+    read().split("Planilha").length === 2 && downloads.length === nd2 && uploads.length === 2 && pushes.length === 0, JSON.stringify(read()));
+  st = await casc();
+  check("…e fica estável", quietStats(st) && pushes.length === 0 && uploads.length === 2, JSON.stringify(st));
 
   // nota gravada por versão antiga: imagem ainda como endereço da web
   const Y = L.tasks.find((t) => t.id !== X.id && !t.parent && index[t.id] && !L.tasks.some((k) => k.parent === t.id))!;

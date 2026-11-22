@@ -6,7 +6,7 @@ import {
   archiveTask, createTask, moveTask, getTask, uploadAttachment, fetchSpace, fetchStructure, fetchTasks, fetchTeamsAndSpaces, updateTask, type Http, type SpaceData,
 } from "./clickup";
 import {
-  sanitize, stripFrontmatter, syncCycle, type Api, type Card, type Index, type Plan, type VaultPort,
+  isImage, sanitize, stripFrontmatter, syncCycle, type Api, type Card, type Index, type Plan, type VaultPort,
 } from "./core";
 
 interface SpaceRef { teamId: string; id: string; name: string }
@@ -29,11 +29,14 @@ interface Settings {
 }
 interface Data { version: number; settings: Settings; index: Index; iconPaths: string[]; appliedRoot: string; log?: string[] }
 
-const VERSION = 2;
+const VERSION = 3;
 const STRUCTURE_TTL = 30 * 1000; // status criados, apagados, renomeados ou reordenados aparecem em até 30 s
 const QUIET_MS = 2000;
 const CREATE_QUIET_MS = 5000;
 const EMPTY_GRACE_MS = 10 * 60 * 1000;
+
+/** Pasta do cofre para os arquivos dos cards. */
+const attachDir = (name: string) => (isImage(name) ? "anexos/imagens" : "anexos/documentos");
 
 const DEFAULTS: Settings = {
   token: "", root: "", intervalSec: 5, separator: "----------", includeTitle: false, spaces: [],
@@ -105,6 +108,9 @@ export default class ClickUpEspelho extends Plugin {
       this.settings.root = "";
       this.settings.intervalSec = DEFAULTS.intervalSec;
     }
+
+    // v3 passou a trazer documentos anexados: relê os anexos de cada card uma vez
+    if ((d.version ?? 1) < 3) for (const e of Object.values(this.index)) delete e.updated;
 
     this.codeAt = await this.codeTime();
     this.checkLastTrace();
@@ -184,6 +190,30 @@ export default class ClickUpEspelho extends Plugin {
     await this.persist();
   }
 
+  private async ensureFolder(dir: string) {
+    let cur = "";
+    for (const part of dir.split("/")) {
+      cur = cur ? `${cur}/${part}` : part;
+      if (!this.app.vault.getAbstractFileByPath(cur)) await this.app.vault.createFolder(cur).catch(() => { /* já existe */ });
+    }
+  }
+  /** Arquivos dos cards que estão fora de anexos/ (raiz ou outra pasta) vão para o lugar certo; os links acompanham. */
+  private async tidyAttachments() {
+    for (const e of Object.values(this.index)) {
+      for (const name of Object.keys(e.files ?? {})) {
+        try {
+          const f = this.app.metadataCache.getFirstLinkpathDest(name, e.path);
+          if (!(f instanceof TFile)) continue;
+          const dir = attachDir(f.name);
+          const dest = `${dir}/${f.name}`;
+          if (f.path === dest || this.app.vault.getAbstractFileByPath(dest)) continue;
+          await this.ensureFolder(dir);
+          await this.app.fileManager.renameFile(f, dest);
+        } catch (err) { console.error("ClickUp Espelho: mover anexo", name, err); }
+      }
+    }
+  }
+
   // ---- sincronização (ClickUp → Obsidian) ----
   private port(): VaultPort {
     const v = this.app.vault;
@@ -201,10 +231,13 @@ export default class ClickUpEspelho extends Plugin {
         // o endereço sem token só entrega o arquivo com o token da API (sem ele vem a página de login)
         const r = await requestUrl({ url, throw: false, headers: { Authorization: await this.getToken() } });
         const type = String(r.headers?.["content-type"] ?? r.headers?.["Content-Type"] ?? "");
-        if (r.status !== 200 || !type.startsWith("image/")) throw new Error(`download respondeu ${r.status} (${type || "sem tipo"})`);
-        // mesma pasta que o Obsidian usa para imagens coladas (Configurações → Arquivos e links)
-        const dest = await this.app.fileManager.getAvailablePathForAttachment(name, notePath);
-        await v.createBinary(dest, r.arrayBuffer);
+        // sem login o ClickUp devolve uma página HTML no lugar do arquivo
+        const bad = isImage(name) ? !type.startsWith("image/") : type.startsWith("text/html") && !/\.html?$/i.test(name);
+        if (r.status !== 200 || bad) throw new Error(`download respondeu ${r.status} (${type || "sem tipo"})`);
+        const dir = attachDir(name);
+        await this.ensureFolder(dir);
+        const dest = `${dir}/${name}`;
+        if (!at(dest)) await v.createBinary(dest, r.arrayBuffer);
       },
       findById: async (id) => {
         if (!byId) {
@@ -454,6 +487,7 @@ export default class ClickUpEspelho extends Plugin {
         statusColors: this.settings.statusColors, working: this.working(), quietMs: QUIET_MS, createQuietMs: CREATE_QUIET_MS, push: this.settings.push, cascade: this.settings.cascade,
       });
       const changes = st.created + st.updated + st.moved + st.trashed + st.conflicts + st.pushed + st.added + st.archived + st.converted + st.checked + st.uploaded;
+      await this.tidyAttachments();
       await this.pruneEmpty(plan);
       await this.removeHidden(root, all, shown);
       this.markNotes();
@@ -475,7 +509,7 @@ export default class ClickUpEspelho extends Plugin {
       }
       this.lastError = st.errors[0] ?? "";
       if (st.converted) new Notice(`ClickUp Espelho: ${st.converted} subtarefa(s) virou card solto (card novo criado, o antigo foi arquivado).`);
-      if (st.uploaded) new Notice(`ClickUp Espelho: ${st.uploaded} imagem(ns) enviada(s) ao ClickUp.`);
+      if (st.uploaded) new Notice(`ClickUp Espelho: ${st.uploaded} arquivo(s) enviado(s) ao ClickUp.`);
       if (st.added) new Notice(`ClickUp Espelho: ${st.added} card(s) criado(s) no ClickUp.`);
       if (st.archived) new Notice(`ClickUp Espelho: ${st.archived} card(s) arquivado(s) no ClickUp (dá para restaurar por lá).`);
       if (st.conflicts) new Notice(`ClickUp Espelho: ${st.conflicts} conflito(s) — cópia salva em ${root ? root + "/" : ""}_conflitos.`);

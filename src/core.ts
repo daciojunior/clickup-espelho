@@ -114,12 +114,13 @@ const IMG_EXT = /\.(png|jpe?g|gif|webp|svg|bmp|avif)$/i;
 const IMG_MD = /!\[[^\]\n]*\]\((https:\/\/[\w.-]+\.clickup-attachments\.com\/[^\s)?]+)\)/g;
 const EMBED = /!\[\[([^\]|\n]+)(\|[^\]\n]*)?\]\]/g;
 const uuidOf = (url: string) => (/\/([0-9a-f]{8}-[0-9a-f-]{27})\//i.exec(url) ?? [])[1] ?? "";
-export function imageName(url: string, title?: string): string {
+export const isImage = (name: string) => IMG_EXT.test(name);
+export function imageName(url: string, title?: string, noExt = ".png"): string {
   let raw = title ?? "";
   if (!raw) { try { raw = decodeURIComponent(basename(url)); } catch { raw = basename(url); } }
   const m = /\.[A-Za-z0-9]+$/.exec(raw);
   const id = uuidOf(url).slice(0, 8) || hash(url).split(":")[0];
-  return `${sanitize(m ? raw.slice(0, -m[0].length) : raw)} ${id}${(m ? m[0] : ".png").toLowerCase()}`;
+  return `${sanitize(m ? raw.slice(0, -m[0].length) : raw)} ${id}${(m ? m[0] : noExt).toLowerCase()}`;
 }
 const imgsOf = (e?: IndexEntry): Imgs | undefined => (e && (e.files || e.att) ? { files: e.files ?? {}, att: e.att ?? [] } : undefined);
 /** Texto do ClickUp → texto da nota (registra em im.files as imagens encontradas). */
@@ -334,6 +335,7 @@ const DEFAULT_NAME = /^(sem t[ií]tulo|untitled)/i;
 export async function syncCycle(
   port: VaultPort, api: Api, root: string, spaces: SpaceData[], index: Index, opts: SyncOptions = {},
 ): Promise<{ plan: Plan; stats: Stats }> {
+  const justUploaded = new Set<string>(); // documentos enviados neste ciclo
   const st: Stats = { created: 0, updated: 0, moved: 0, trashed: 0, conflicts: 0, keptLocal: 0, pushed: 0, errors: [], added: 0, archived: 0, converted: 0, checked: 0, uploaded: 0 };
   const quiet = opts.quietMs ?? 0;
   const busy = new Set<string>();
@@ -487,13 +489,16 @@ export async function syncCycle(
     if (port.readImage && api.upload) {
       for (const m of stripFrontmatter(local).matchAll(EMBED)) {
         const name = m[1].trim();
-        if (!IMG_EXT.test(name) || e.files?.[name] || e.att?.includes(name)) continue;
+        // só arquivos (têm extensão e não são notas); os já conhecidos não sobem de novo
+        if (!/\.[A-Za-z0-9]+$/.test(name) || /\.(md|canvas|base)$/i.test(name) || e.files?.[name] || e.att?.includes(name)) continue;
         try {
           const data = await port.readImage(name, path);
           if (!data) continue;
           (e.files ??= {})[name] = await api.upload(n.id, basename(name), data);
+          // documento (não é imagem): fica como anexo do card; na nota, o link continua onde está
+          if (!IMG_EXT.test(name)) { (e.att ??= []).push(name); justUploaded.add(name); }
           st.uploaded++;
-        } catch (err: any) { st.errors.push(`${t.name}: imagem ${name} — ${err?.message ?? err}`); }
+        } catch (err: any) { st.errors.push(`${t.name}: arquivo ${name} — ${err?.message ?? err}`); }
       }
     }
     const lbody = toRemote(stripFrontmatter(local), imgsOf(e));
@@ -641,12 +646,16 @@ export async function syncCycle(
         for (const a of full.attachments ?? []) {
           const url = (a.url ?? "").split("?")[0];
           const id = uuidOf(url);
-          if (!url || !(IMG_EXT.test(a.title ?? url) || (a.mimetype ?? "").startsWith("image/"))) continue;
+          if (!url) continue;
           if (id && rbody.includes(id)) continue; // já está no texto
-          const name = imageName(url, a.title);
+          const img = IMG_EXT.test(a.title ?? url) || (a.mimetype ?? "").startsWith("image/");
+          // arquivo que saiu deste cofre mantém o nome que já tem aqui
+          const name = Object.keys(im.files).find((k) => im.files[k] === url || (id && uuidOf(im.files[k]) === id)) ?? imageName(url, a.title, img ? ".png" : ".bin");
           im.files[name] = url;
-          im.att.push(name);
+          if (!im.att.includes(name)) im.att.push(name);
         }
+        // enviado agora mesmo e o ClickUp ainda não listou: continua valendo
+        for (const x of old?.att ?? []) if (justUploaded.has(x) && !im.att.includes(x)) im.att.push(x);
         updated = t.date_updated;
         st.checked++;
       } catch (err: any) { st.errors.push(`${t.name}: anexos — ${err?.message ?? err}`); }

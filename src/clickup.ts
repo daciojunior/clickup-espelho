@@ -133,6 +133,6 @@ export async function uploadAttachment(post: RawPost, token: string, id: string,
   body.set(new Uint8Array(data), head.length);
   body.set(tail, head.length + data.byteLength);
   const r = await post(`${BASE}/task/${id}/attachment`, token, `multipart/form-data; boundary=${boundary}`, body.buffer);
-  if (r.status < 200 || r.status >= 300 || !r.json?.url) throw new Error(`envio da imagem respondeu ${r.status}${r.json?.err ? `: ${r.json.err}` : ""}`);
+  if (r.status < 200 || r.status >= 300 || !r.json?.url) throw new Error(`envio do arquivo respondeu ${r.status}${r.json?.err ? `: ${r.json.err}` : ""}`);
   return String(r.json.url).split("?")[0];
 }
