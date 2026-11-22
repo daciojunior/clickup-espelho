@@ -21,7 +21,16 @@ function main(argv) {
   if (cmd === "get") { const v = readJson(file, {})[rest[0]]; return v == null ? "" : String(v); }
   if (cmd === "data") { // data.json do ClickUp Espelho: token + spaces do config.json
     const cfg = readJson(rest[0], {});
-    writeJson(file, { settings: { token: rest[1] || "", spaces: cfg.spaces || [] } });
+    let spaces = cfg.spaces || [];
+    if (!cfg.spaces && cfg.spaceName && rest[2]) { // procura o space pelo nome nas respostas do ClickUp
+      for (const t of readJson(rest[2] + "/teams.json", {}).teams || [])
+        for (const sp of readJson(rest[2] + "/sp_" + t.id + ".json", {}).spaces || [])
+          if (sp.name === cfg.spaceName) spaces.push({ teamId: String(t.id), id: String(sp.id), name: sp.name });
+    }
+    writeJson(file, { settings: { token: rest[1] || "", spaces } });
+    return String(spaces.length);
+  } else if (cmd === "teamids") {
+    return (readJson(file, {}).teams || []).map((t) => t.id).join(" ");
   } else if (cmd === "brat") { // acrescenta o repositório à lista do BRAT
     const repo = rest[0];
     const b = readJson(file, {

@@ -111,7 +111,22 @@ else {
       Ok "token valido (usuario: $($u.user.username))"
     } catch { Warn "o ClickUp recusou este token. Ele foi gravado mesmo assim; corrija depois nas configuracoes do plugin." }
   } else { Warn "sem token: informe depois em Configuracoes -> ClickUp Espelho" }
-  Write-Json $data ([pscustomobject]@{ settings = [pscustomobject]@{ token = $Token; spaces = @($cfg.spaces) } })
+  # space: vem do config.json ou e procurado pelo nome na conta do token
+  $spaces = @()
+  if ($cfg.PSObject.Properties.Name -contains "spaces") { $spaces = @($cfg.spaces) }
+  elseif ($Token -and $cfg.spaceName) {
+    try {
+      $h = @{ Authorization = $Token }
+      foreach ($t in (Invoke-RestMethod -Uri "https://api.clickup.com/api/v2/team" -Headers $h).teams) {
+        foreach ($sp in (Invoke-RestMethod -Uri "https://api.clickup.com/api/v2/team/$($t.id)/space?archived=false" -Headers $h).spaces) {
+          if ($sp.name -eq $cfg.spaceName) { $spaces += [pscustomobject]@{ teamId = "$($t.id)"; id = "$($sp.id)"; name = "$($sp.name)" } }
+        }
+      }
+    } catch { }
+    if ($spaces.Count) { Ok "space encontrado: $($cfg.spaceName)" }
+    else { Warn "nao achei o space '$($cfg.spaceName)' nesta conta. Escolha depois em Configuracoes -> ClickUp Espelho -> Carregar spaces." }
+  }
+  Write-Json $data ([pscustomobject]@{ settings = [pscustomobject]@{ token = $Token; spaces = @($spaces) } })
 }
 
 # ---- 6. Plugins ligados ----

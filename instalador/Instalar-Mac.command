@@ -110,7 +110,18 @@ else
     if [ "$CODE" = "200" ]; then ok "token válido"
     else warn "o ClickUp recusou este token (resposta $CODE). Ele foi gravado mesmo assim; corrija depois nas configurações do plugin."; fi
   else warn "sem token: informe depois em Configurações -> ClickUp Espelho"; fi
-  json data "$DATA" "$HERE/config.json" "$TOKEN"
+  # space: vem do config.json ou é procurado pelo nome na conta do token
+  LOOK="$(mktemp -d)"
+  if [ -n "$TOKEN" ]; then
+    curl -s -H "Authorization: $TOKEN" https://api.clickup.com/api/v2/team -o "$LOOK/teams.json"
+    for t in $(json teamids "$LOOK/teams.json"); do
+      curl -s -H "Authorization: $TOKEN" "https://api.clickup.com/api/v2/team/$t/space?archived=false" -o "$LOOK/sp_$t.json"
+    done
+  fi
+  FOUND="$(json data "$DATA" "$HERE/config.json" "$TOKEN" "$LOOK")"
+  rm -rf "$LOOK"
+  if [ "$FOUND" = "0" ] && [ -n "$TOKEN" ]; then warn "não achei o space nesta conta. Escolha depois em Configurações -> ClickUp Espelho -> Carregar spaces."
+  elif [ "$FOUND" != "0" ]; then ok "space configurado"; fi
 fi
 
 # ---- 6. Plugins ligados ----

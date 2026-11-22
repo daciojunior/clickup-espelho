@@ -19,9 +19,12 @@ with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
             info.compress_type = zipfile.ZIP_DEFLATED
             with open(full, "rb") as src:
                 data = src.read()
-            if f == "config.json":  # o caminho do cofre de desenvolvimento não vai no pacote
+            if f == "config.json":  # dados desta máquina e IDs do ClickUp não vão no pacote
                 cfg = json.loads(data.decode("utf-8"))
                 cfg.pop("devVault", None)
+                spaces = cfg.pop("spaces", [])  # sem IDs no pacote: o instalador acha o space pelo nome
+                if spaces:
+                    cfg["spaceName"] = spaces[0]["name"]
                 data = (json.dumps(cfg, ensure_ascii=False, indent=2) + chr(10)).encode("utf-8")
             z.writestr(info, data)
 print("ok:", out)
