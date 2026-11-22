@@ -19,21 +19,16 @@ Tenha em mãos o **seu** token do ClickUp: no ClickUp, avatar → Settings → A
 
 ## Mac
 
+O macOS bloqueia programas baixados da internet que não foram registrados na Apple, e nas versões recentes o botão direito → Abrir não libera mais. Por isso a instalação é pelo Terminal (a janela de comandos do Mac). São 4 passos:
+
 1. Extraia o zip (duplo clique nele).
-2. Duplo clique em `Instalar-Mac.command`. Abre uma janela preta com texto (o Terminal): é normal.
-3. Responda as duas perguntas (pasta do cofre e token).
+2. Abra o **Terminal**: aperte Command + Espaço, digite `Terminal` e aperte Enter.
+3. Digite `bash` e depois um espaço. Não aperte Enter ainda.
+4. Arraste o arquivo `Instalar-Mac.command` para dentro da janela do Terminal, solte e aperte Enter.
 
-**Se o Mac disser que o arquivo "não pode ser aberto"** (ele faz isso com arquivos baixados da internet):
+Depois é só responder as duas perguntas (pasta do cofre e token).
 
-- clique no arquivo com o botão direito → **Abrir** → **Abrir**; ou
-- vá em Ajustes do Sistema → Privacidade e Segurança, desça até o aviso sobre o `Instalar-Mac.command` e clique em **Abrir Mesmo Assim**.
-
-**Se ainda assim não abrir**, use o caminho que sempre funciona:
-
-1. Abra o programa **Terminal** (aperte Command + Espaço, digite `Terminal`, Enter).
-2. Digite `bash` e um espaço. Não aperte Enter ainda.
-3. Arraste o arquivo `Instalar-Mac.command` para dentro da janela do Terminal e solte.
-4. Aperte Enter.
+**Alternativa sem Terminal:** dê duplo clique em `Instalar-Mac.command`, feche o aviso de bloqueio, vá em Ajustes do Sistema → Privacidade e Segurança, desça até a seção Segurança e clique em **Abrir Mesmo Assim** ao lado do nome do arquivo.
 
 ## Depois de instalar (igual nos dois)
 
