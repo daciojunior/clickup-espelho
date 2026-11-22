@@ -1,0 +1,12 @@
+{
+  "vaultName": "Nome do cofre",
+  "repo": "usuario/repositorio",
+  "spaces": [
+    {
+      "teamId": "ID do workspace",
+      "id": "ID do space",
+      "name": "Nome do space"
+    }
+  ],
+  "devVault": "(opcional) cofre usado no desenvolvimento"
+}

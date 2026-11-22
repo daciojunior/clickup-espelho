@@ -1,0 +1,17 @@
+.cue-view { padding: 8px; }
+.cue-bar { display: flex; gap: 6px; margin-bottom: 8px; }
+.cue-bar .mod-cta { flex: 1; }
+.cue-search { width: 100%; margin: 8px 0; }
+.cue-queue { border: 1px solid var(--background-modifier-border); border-radius: 6px; padding: 4px; }
+.cue-group { margin-top: 10px; padding: 2px 8px; font-size: var(--font-ui-smaller); color: var(--text-muted); text-transform: uppercase; }
+.cue-row { display: flex; align-items: center; gap: 6px; padding: 3px 8px; border-radius: 4px; cursor: pointer; }
+.cue-row:hover { background: var(--background-modifier-hover); }
+.cue-row.is-selected { background: var(--background-modifier-active-hover); }
+.cue-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cue-status { font-size: var(--font-ui-smaller); color: var(--text-faint); }
+.cue-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-faint); flex: none; }
+.cue-num { min-width: 18px; text-align: center; font-size: var(--font-ui-smaller); border-radius: 9px; padding: 0 5px; background: var(--interactive-accent); color: var(--text-on-accent); }
+.cue-empty { color: var(--text-muted); padding: 8px; }
+
+/* notas espelhadas: o bloco de propriedades (clickup_id) fica escondido */
+.clickup-espelho-note .metadata-container { display: none; }

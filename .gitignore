@@ -1,0 +1,9 @@
+node_modules/
+*.env
+test/run.mjs
+/main.js
+*.zip
+pacote-outra-maquina/
+instalador/plugins/
+data.json
+instalador/config.json
