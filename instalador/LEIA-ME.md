@@ -13,9 +13,10 @@ Tenha em mãos o **seu** token do ClickUp: no ClickUp, avatar → Settings → A
 
 ## Windows
 
-1. Extraia o zip.
-2. Duplo clique em `Instalar-Windows.bat`.
-3. Responda as duas perguntas (pasta do cofre e token).
+1. **Extraia o zip**: botão direito nele → "Extrair tudo". Rodar o instalador de dentro do zip, sem extrair, não funciona.
+2. Feche o Obsidian, se estiver aberto.
+3. Na pasta extraída, duplo clique em `Instalar-Windows.bat`.
+4. Responda as perguntas (pasta do cofre e token). Se a máquina já tem um cofre com o ClickUp Espelho, o instalador o encontra e sugere atualizar esse mesmo: basta apertar Enter.
 
 ## Mac
 

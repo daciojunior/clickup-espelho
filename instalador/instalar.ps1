@@ -10,6 +10,14 @@ param(
   [switch]$SemPerguntas   # usa os padroes sem perguntar
 )
 $ErrorActionPreference = "Stop"
+# qualquer erro inesperado fica na tela, em vez de a janela fechar sozinha
+trap {
+  Write-Host ""
+  Write-Host "ERRO: $($_.Exception.Message)" -ForegroundColor Red
+  Write-Host "Linha $($_.InvocationInfo.ScriptLineNumber). Copie esta mensagem e envie para quem passou o instalador." -ForegroundColor Red
+  if (-not $SemPerguntas) { Read-Host "Enter para fechar" | Out-Null }
+  exit 1
+}
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 $utf8 = New-Object System.Text.UTF8Encoding $false
@@ -35,9 +43,32 @@ elseif (Get-Command winget -ErrorAction SilentlyContinue) {
 }
 else { Warn "winget nao encontrado. Instale o Obsidian por https://obsidian.md e rode este instalador de novo."; Read-Host "Enter para sair"; exit 1 }
 
+# o Obsidian aberto segura os plugins antigos e pode desfazer a lista de plugins ligados
+if (-not $SemObsidian -and -not $SemPerguntas) {
+  while (Get-Process Obsidian -ErrorAction SilentlyContinue) {
+    Write-Host ""
+    Read-Host "O Obsidian esta aberto. Feche TODAS as janelas dele e aperte Enter" | Out-Null
+  }
+}
+
 # ---- 2. Cofre ----
 Step "Cofre"
 $default = Join-Path ([Environment]::GetFolderPath("MyDocuments")) $cfg.vaultName
+# se esta maquina ja tem um cofre com o ClickUp Espelho, ele e a sugestao (atualiza no lugar)
+$regFile = Join-Path $env:APPDATA "obsidian\obsidian.json"
+$existing = $false
+if (-not $Vault -and (Test-Path $regFile)) {
+  try {
+    $best = [int64]-1
+    foreach ($p in (Read-Json $regFile).vaults.PSObject.Properties) {
+      $vp = $p.Value.path
+      if ($vp -and (Test-Path (Join-Path $vp ".obsidian\plugins\clickup-espelho")) -and ([int64]$p.Value.ts -gt $best)) {
+        $best = [int64]$p.Value.ts; $default = $vp; $existing = $true
+      }
+    }
+  } catch { }
+}
+if ($existing) { Write-Host "   Achei um cofre que ja usa o ClickUp Espelho. Ele sera atualizado:" ; Write-Host "   $default" -ForegroundColor White }
 if (-not $Vault) {
   if ($SemPerguntas) { $Vault = $default }
   else {
@@ -66,7 +97,9 @@ foreach ($name in @("clickup-espelho", "iconic", "editing-toolbar")) {
     Copy-Item $f.FullName (Join-Path $dst $f.Name) -Force
   }
   $enabled += $name
-  Ok $name
+  $ver = ""
+  try { $ver = " v" + (Read-Json (Join-Path $dst "manifest.json")).version } catch { }
+  Ok "$name$ver"
 }
 
 # ---- 4. BRAT (baixado da pagina oficial) ----
@@ -132,9 +165,11 @@ else {
 # ---- 6. Plugins ligados ----
 $cp = Join-Path $obs "community-plugins.json"
 $list = @()
-if (Test-Path $cp) { $list = @(Read-Json $cp) }
+if (Test-Path $cp) { foreach ($x in (Read-Json $cp)) { if ($x -is [string] -and $list -notcontains $x) { $list += $x } } }
 foreach ($n in $enabled) { if ($list -notcontains $n) { $list += $n } }
-[IO.File]::WriteAllText($cp, (ConvertTo-Json @($list)), $utf8)
+# escrito a mao: o ConvertTo-Json do PowerShell 5 embrulha listas lidas de arquivo
+$items = @(); foreach ($n in $list) { $items += ('"' + $n + '"') }
+[IO.File]::WriteAllText($cp, ("[" + ($items -join ", ") + "]"), $utf8)
 $app = Join-Path $obs "app.json"
 if (-not (Test-Path $app)) { [IO.File]::WriteAllText($app, '{ "promptDelete": false }', $utf8) }
 

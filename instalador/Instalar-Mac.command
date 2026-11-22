@@ -41,9 +41,27 @@ else
   fi
 fi
 
+# o Obsidian aberto segura os plugins antigos e pode desfazer a lista de plugins ligados
+if [ "${SEM_OBSIDIAN:-}" != "1" ] && [ "${SEM_PERGUNTAS:-}" != "1" ]; then
+  while pgrep -x Obsidian >/dev/null 2>&1; do
+    read -r -p "O Obsidian está aberto. Feche-o por completo (Command + Q) e aperte Enter " _
+  done
+fi
+
 # ---- 2. Cofre ----
 step "Cofre"
 DEFAULT="$HOME/Documents/$VAULT_NAME"
+REG="$HOME/Library/Application Support/obsidian/obsidian.json"
+# se esta máquina já tem um cofre com o ClickUp Espelho, ele é a sugestão (atualiza no lugar)
+if [ -z "${VAULT:-}" ] && [ -f "$REG" ]; then
+  while IFS= read -r vp; do
+    if [ -n "$vp" ] && [ -d "$vp/.obsidian/plugins/clickup-espelho" ]; then
+      DEFAULT="$vp"; echo "   Achei um cofre que já usa o ClickUp Espelho. Ele será atualizado:"; echo "   $vp"; break
+    fi
+  done <<EOF
+$(json vaults "$REG")
+EOF
+fi
 VAULT="${VAULT:-}"
 if [ -z "$VAULT" ]; then
   if [ "${SEM_PERGUNTAS:-}" = "1" ]; then VAULT="$DEFAULT"
@@ -131,7 +149,6 @@ json enable "$OBS/community-plugins.json" $ENABLED
 
 # ---- 7. Registrar o cofre no Obsidian e abrir ----
 step "Abrir o cofre"
-REG="$HOME/Library/Application Support/obsidian/obsidian.json"
 if [ "${SEM_OBSIDIAN:-}" = "1" ]; then warn "pulado a pedido"
 elif pgrep -x Obsidian >/dev/null 2>&1; then warn "o Obsidian está aberto: use 'Abrir pasta como cofre' e escolha $VAULT"
 else

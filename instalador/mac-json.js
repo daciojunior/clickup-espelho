@@ -29,6 +29,8 @@ function main(argv) {
     }
     writeJson(file, { settings: { token: rest[1] || "", spaces } });
     return String(spaces.length);
+  } else if (cmd === "vaults") { // cofres conhecidos do Obsidian, do mais recente para o mais antigo
+    return Object.values(readJson(file, {}).vaults || {}).sort((a, b) => (b.ts || 0) - (a.ts || 0)).map((v) => v.path).join(String.fromCharCode(10));
   } else if (cmd === "teamids") {
     return (readJson(file, {}).teams || []).map((t) => t.id).join(" ");
   } else if (cmd === "brat") { // acrescenta o repositório à lista do BRAT
