@@ -61,7 +61,10 @@ export interface VaultPort {
   image?(name: string, url: string, notePath: string): Promise<void>;
   /** Conteúdo de uma imagem do cofre referenciada pela nota (null se não existir). */
   readImage?(name: string, notePath: string): Promise<ArrayBuffer | null>;
+  /** Guarda uma cópia no histórico antes de algo ser sobrescrito ou removido; devolve onde ficou. */
+  backup?(path: string, content: string, why: string): Promise<string | undefined>;
 }
+export interface ConflictNote { path: string; name: string; kept: "ClickUp" | "Obsidian"; backup?: string }
 export interface Api {
   update(id: string, changes: Changes): Promise<Task>;
   create(listId: string, task: NewTask): Promise<Task>;
@@ -140,6 +143,24 @@ function toRemote(body: string, im?: Imgs): string {
   return body
     .replace(EMBED, (m, n: string) => (im.att.includes(n) ? "\u0000" : im.files[n] ? `![${n}](${im.files[n]})` : m))
     .replace(/\n?[ \t]*\u0000[ \t]*/g, "").trim();
+}
+/**
+ * Mesmo texto, desconsiderando o que o ClickUp reescreve ao guardar: barras de escape, marcador de lista,
+ * links automáticos (e-mail, endereço), negrito, alinhamento de tabelas, espaços e linhas em branco.
+ * Títulos, links de verdade e o texto em si continuam contando como diferença.
+ */
+export const sameText = (a: string, b: string): boolean => plainText(a) === plainText(b);
+export function plainText(s0: string): string {
+  const n = (s: string) => norm(s).split("\n").map((l) => l
+    .replace(/\\([\\`*_{}\[\]()#+\-.!|>~])/g, "$1")
+    .replace(/^(\s*)[*+]\s+/, "$1- ")
+    .replace(/\*/g, "") // o ClickUp perde negrito dentro de tabelas e de links
+    .replace(/\[([^\]\n]+)\]\((?:mailto:|https?:\/\/)?([^)\s]*)\)/g, (m, text: string, url: string) =>
+      text.replace(/^(mailto:|https?:\/\/)/, "").replace(/\/$/, "") === url.replace(/\/$/, "") ? text : m)
+    .replace(/<br\s*\/?>/g, " ")
+    .replace(/-{3,}/g, "---").replace(/\s*\|\s*/g, "|").replace(/\s+/g, " ").trim())
+    .filter((l) => l && !/^[|\-: ]+$/.test(l)).join("\n");
+  return n(s0);
 }
 const prio = (t: Task) => t.priority?.priority ?? "";
 
@@ -315,6 +336,7 @@ export interface Stats {
   converted: number; // subtarefas recriadas como card solto
   checked: number; // cards cujos anexos foram conferidos
   uploaded: number; // imagens do cofre enviadas ao ClickUp
+  conflictNotes: ConflictNote[]; // notas alteradas dos dois lados neste ciclo
 }
 export interface SyncOptions extends PlanOptions {
   /** Não envia nem sobrescreve notas alteradas há menos que isto (usuário ainda digitando). */
@@ -336,11 +358,21 @@ export async function syncCycle(
   port: VaultPort, api: Api, root: string, spaces: SpaceData[], index: Index, opts: SyncOptions = {},
 ): Promise<{ plan: Plan; stats: Stats }> {
   const justUploaded = new Set<string>(); // documentos enviados neste ciclo
-  const st: Stats = { created: 0, updated: 0, moved: 0, trashed: 0, conflicts: 0, keptLocal: 0, pushed: 0, errors: [], added: 0, archived: 0, converted: 0, checked: 0, uploaded: 0 };
+  const st: Stats = { created: 0, updated: 0, moved: 0, trashed: 0, conflicts: 0, keptLocal: 0, pushed: 0, errors: [], added: 0, archived: 0, converted: 0, checked: 0, uploaded: 0, conflictNotes: [] };
   const quiet = opts.quietMs ?? 0;
   const busy = new Set<string>();
+  // histórico nunca pode impedir a sincronização
+  const keep = async (path: string, content: string, why: string) => {
+    try { return await port.backup?.(path, content, why); } catch { return undefined; }
+  };
 
-  const saveConflict = async (path: string, content: string, who: string) => {
+  const saveConflict = async (path: string, content: string, who: "ClickUp" | "Obsidian") => {
+    if (port.backup) {
+      // quem ficou na nota é o outro lado; a versão de "who" vai para o histórico
+      st.conflictNotes.push({ path, name: basename(path).replace(/\.md$/, ""), kept: who === "Obsidian" ? "ClickUp" : "Obsidian", backup: await keep(path, content, `conflito-versao-${who}`) });
+      st.conflicts++;
+      return;
+    }
     const dir = join(root, CONFLICT_DIR);
     if (!(await port.exists(dir))) await port.mkdir(dir);
     const stamp = new Date().toISOString().replace(/[:T]/g, "-").slice(0, 19);
@@ -506,7 +538,10 @@ export async function syncCycle(
     const rh = hash(remoteBody(t));
     const localChanged = lh !== e.lBody;
     const remoteChanged = rh !== e.rBody;
-    if (localChanged && lh !== rh) {
+    if (localChanged && remoteChanged && lh !== rh && sameText(lbody, remoteBody(t))) {
+      // os dois lados têm o mesmo texto, só a formatação difere: não há o que enviar nem o que sobrescrever
+      e.lBody = lh; e.rBody = rh;
+    } else if (localChanged && lh !== rh) {
       if (!remoteChanged) ch.body = lbody;
       else if ((await port.mtime(path)) > Number(t.date_updated ?? 0)) {
         // conflito: o local é mais recente; guarda a versão do ClickUp
@@ -517,6 +552,7 @@ export async function syncCycle(
 
     if (!Object.keys(ch).length) continue;
     try {
+      if (ch.body !== undefined && remoteBody(t)) await keep(path, remoteBody(t), "clickup-antes-do-envio");
       const fresh = await api.update(n.id, ch);
       Object.assign(t, fresh);
       e.name = t.name; e.status = t.status.status; e.priority = prio(t);
@@ -679,8 +715,12 @@ export async function syncCycle(
       let useRemote = false;
       if (lh !== rh) {
         if (remoteChanged) {
-          if (localChanged) await saveConflict(n.path, local, "Obsidian");
-          useRemote = true;
+          // mesmo texto com outra formatação (o ClickUp reescreve tabelas, listas e links): a nota fica como está
+          if (sameText(lbody, rbody)) lBody = lh;
+          else {
+            if (localChanged) await saveConflict(n.path, local, "Obsidian");
+            useRemote = true;
+          }
         } else if (localChanged) { st.keptLocal++; lBody = baseL!; } // pendente de envio
         else lBody = lh; // em sincronia, só a formatação difere
       }
@@ -707,7 +747,11 @@ export async function syncCycle(
       }
       finalBody = body ?? lraw;
       const next = compose(local, t, body);
-      if (next !== local) { await port.write(n.path, next); st.updated++; }
+      if (next !== local) {
+        if (body !== null) await keep(n.path, local, "nota-antes-de-atualizar");
+        await port.write(n.path, next);
+        st.updated++;
+      }
     }
     // guarda só as imagens que a nota usa e baixa as que faltam no cofre
     const files: Record<string, string> = {};
@@ -725,10 +769,22 @@ export async function syncCycle(
 
   const alive = new Set(plan.notes.map((n) => n.id));
   const synced = new Set(spaces.map((s) => s.id));
-  for (const id of Object.keys(index)) {
+  // trava: se o ClickUp de repente "perdeu" muitos cards de uma vez, é mais provável uma falha de leitura do que
+  // uma exclusão de verdade. Nada é removido; fica o aviso, e a próxima leitura correta resolve sozinha.
+  const dead = Object.keys(index).filter((id) => !alive.has(id) && synced.has(index[id].spaceId));
+  // (lista ocultada ou apagada de propósito não conta: aí os cards saem mesmo)
+  const lists = new Set(spaces.flatMap((s) => s.lists.map((l) => l.id)));
+  const inList = (id: string) => { const l = index[id].listId; return !l || lists.has(l); };
+  const total = Object.keys(index).filter(inList).length;
+  const lost = dead.filter(inList);
+  if (lost.length > Math.max(opts.maxArchive ?? 10, total * 0.3)) {
+    st.errors.push(`${lost.length} de ${total} cards sumiram do ClickUp de uma vez; por segurança nenhuma nota foi removida`);
+    for (const id of lost) dead.splice(dead.indexOf(id), 1);
+  }
+  for (const id of dead) {
     const e = index[id];
-    if (alive.has(id) || !synced.has(e.spaceId)) continue;
     if (await port.exists(e.path)) {
+      await keep(e.path, await port.read(e.path), "nota-antes-de-remover");
       await port.trash(e.path);
       touchedDirs.add(dirname(e.path));
       st.trashed++;

@@ -40,7 +40,9 @@ const port: VaultPort = {
   image: async (name, url) => { if (!fs.existsSync(abs(name))) { downloads.push(url); fs.writeFileSync(abs(name), "img"); } },
   findById: async (id) =>
     walk("").find((f) => f.endsWith(".md") && !f.includes("_conflitos") && parseFm(fs.readFileSync(abs(f), "utf8")).clickup_id === id) ?? null,
+  backup: async (p, content, why) => { backups.push({ path: p, content, why }); return `hist/${backups.length}`; },
 };
+const backups: { path: string; content: string; why: string }[] = [];
 
 const downloads: string[] = [];
 const uploads: { id: string; fileName: string; size: number }[] = [];
@@ -185,12 +187,14 @@ fs.utimesSync(abs(cp), new Date(Date.now() - 60000), new Date(Date.now() - 60000
 Object.assign(byId(leaf.id), { markdown_description: "remoto mais novo", date_updated: String(Date.now()) });
 st = await cycle();
 check("conflito: remoto mais recente vence, local guardado", st.conflicts === 1 && pushes.length === 0 &&
-  stripFrontmatter(fs.readFileSync(abs(cp), "utf8")) === "remoto mais novo" && fs.readdirSync(abs("_conflitos")).length === 1);
+  stripFrontmatter(fs.readFileSync(abs(cp), "utf8")) === "remoto mais novo" &&
+  st.conflictNotes.length === 1 && st.conflictNotes[0].kept === "ClickUp" && !!st.conflictNotes[0].backup &&
+  backups.some((b) => b.why === "conflito-versao-Obsidian" && b.content.includes("local antigo")) && !fs.existsSync(abs("_conflitos")), JSON.stringify(backups.map((b) => b.why)));
 fs.appendFileSync(abs(cp), "\nlocal mais novo\n");
 Object.assign(byId(leaf.id), { markdown_description: "remoto antigo", date_updated: String(Date.now() - 60000) });
 st = await cycle();
 check("conflito: local mais recente vence, remoto guardado", st.conflicts === 1 && pushes[0]?.ch.body?.endsWith("local mais novo") === true &&
-  fs.readdirSync(abs("_conflitos")).length === 2);
+  st.conflictNotes[0]?.kept === "Obsidian" && backups.some((b) => b.why === "conflito-versao-ClickUp" && b.content === "remoto antigo"), JSON.stringify(backups.map((b) => b.why)));
 
 // exclusão remota
 const list = space.lists.find((l) => l.id === leaf.listId)!;
@@ -487,6 +491,38 @@ depois`;
   check("…e fica estável", quietStats(st) && pushes.length === 0, JSON.stringify(st) + JSON.stringify(pushes));
 }
 
+// ---- mesmo texto com formatação diferente nunca é conflito (caso real de 22/11) ----
+{
+  const Z = L.tasks.find((t) => !t.parent && index[t.id] && !index[t.id].files && !L.tasks.some((k) => k.parent === t.id))!;
+  const zp = index[Z.id].path;
+  const fmZ = () => { const c = fs.readFileSync(abs(zp), "utf8"); return c.slice(0, c.indexOf("\n---\n", 3) + 5); };
+  const mine = "| **Nome** | **Valor** |\n| -------- | --------- |\n| a        | b         |\n\n- item um\n- item dois\n\n## 1. Título\nmed x@y.com e pasta \\Dev e AGENTS.md";
+  const theirs = "| Nome | Valor |\n| --- | --- |\n| a | b |\n\n*   item um\n*   item dois\n\n## 1\\. Título\n\nmed [x@y.com](mailto:x@y.com) e pasta \\\\Dev e [AGENTS.md](http://AGENTS.md)\n\n* * *";
+  fs.writeFileSync(abs(zp), `${fmZ()}\n${mine}\n`);
+  Z.markdown_description = theirs;
+  Z.date_updated = String(Date.now() + 60000);
+  const nb = backups.length;
+  st = await casc();
+  const bodyZ = () => stripFrontmatter(fs.readFileSync(abs(index[Z.id].path), "utf8")).trim();
+  check("os dois lados mudaram só na formatação: a nota fica como está, sem conflito nem envio",
+    bodyZ() === mine && st.conflicts === 0 && pushes.length === 0 && backups.length === nb, JSON.stringify(st) + JSON.stringify(bodyZ()));
+  st = await casc();
+  check("…e fica estável", quietStats(st) && pushes.length === 0, JSON.stringify(st));
+  delete index[Z.id];
+  st = await casc();
+  check("índice perdido + formatação diferente: a nota fica como está (era o defeito de 22/11)",
+    bodyZ() === mine && st.conflicts === 0 && pushes.length === 0 && backups.length === nb, JSON.stringify(st) + JSON.stringify(bodyZ()));
+  st = await casc();
+  check("…e fica estável", quietStats(st) && pushes.length === 0, JSON.stringify(st));
+  // mudança de verdade no ClickUp: a nota é atualizada e a versão anterior vai para o histórico
+  Z.markdown_description = theirs + "\n\nparágrafo novo no ClickUp";
+  Z.date_updated = String(Date.now() + 120000);
+  st = await casc();
+  check("mudança real no ClickUp atualiza a nota e guarda a versão anterior no histórico",
+    bodyZ().endsWith("parágrafo novo no ClickUp") && st.conflicts === 0 && backups.length === nb + 1 &&
+    backups[nb].why === "nota-antes-de-atualizar" && backups[nb].content.includes("| **Nome** | **Valor** |"), JSON.stringify(backups.slice(nb).map((b) => b.why)));
+}
+
 // ---- status mudam no ClickUp: renomear, criar, reordenar, apagar ----
 {
   const where = (st: string) => Object.keys(buildPlan(ROOT, [space]).statusDirs).find((d) => d.startsWith(LD + "/") && d.endsWith(" - " + st))!;
@@ -544,9 +580,14 @@ depois`;
 
 // ---- escrita real: card temporário ----
 const realList = space.lists[0].id;
-const mk = await http(`https://api.clickup.com/api/v2/list/${realList}/task`, token, "POST", { name: "_teste plugin (apagar)", markdown_content: "corpo inicial" });
+// Só roda com ESCRITA_REAL=1: o card temporário aparece em todo cofre que estiver espelhando este space.
+const realWrite = process.env.ESCRITA_REAL === "1";
+if (!realWrite) console.log("(escrita real no ClickUp pulada; use ESCRITA_REAL=1 para rodar)");
+const mk = realWrite
+  ? await http(`https://api.clickup.com/api/v2/list/${realList}/task`, token, "POST", { name: "_teste plugin (apagar)", markdown_content: "corpo inicial" })
+  : { status: 0, json: null as any };
 const tid = mk.json?.id;
-check("API real: criar card temporário", !!tid, String(mk.status));
+if (realWrite) check("API real: criar card temporário", !!tid, String(mk.status));
 if (tid) {
   try {
     const s2 = (await fetchSpace(http, token, spaceId, "x")).lists[0].statuses.map((s) => s.status);

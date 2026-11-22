@@ -6,7 +6,7 @@ import {
   archiveTask, createTask, moveTask, getTask, uploadAttachment, fetchSpace, fetchStructure, fetchTasks, fetchTeamsAndSpaces, updateTask, type Http, type SpaceData,
 } from "./clickup";
 import {
-  isImage, sanitize, stripFrontmatter, syncCycle, type Api, type Card, type Index, type Plan, type VaultPort,
+  isImage, sanitize, stripFrontmatter, syncCycle, type Api, type Card, type ConflictNote, type Index, type Plan, type VaultPort,
 } from "./core";
 
 interface SpaceRef { teamId: string; id: string; name: string }
@@ -121,6 +121,8 @@ export default class ClickUpEspelho extends Plugin {
     this.addRibbonIcon("clipboard-list", "ClickUp: copiar prompts", () => this.openView());
     this.addCommand({ id: "sincronizar", name: "Sincronizar agora", callback: () => this.sync(true) });
     this.addCommand({ id: "painel-copiar", name: "Abrir painel de copiar prompts", callback: () => this.openView() });
+    this.addCommand({ id: "historico", name: "Abrir histórico de segurança", callback: () => this.openHistory() });
+    this.pruneHistory();
     this.addCommand({ id: "copiar-fila", name: "Copiar fila de prompts", callback: () => this.copyQueue() });
     this.addSettingTab(new Tab(this.app, this));
 
@@ -190,6 +192,70 @@ export default class ClickUpEspelho extends Plugin {
     await this.persist();
   }
 
+  // ---- histórico de segurança: cópia de tudo o que o plugin sobrescreve, remove ou envia por cima ----
+  private histDir() { return normalizePath(`${this.manifest.dir}/historico`); }
+  private lastKept = new Map<string, string>(); // evita cópias repetidas do mesmo conteúdo
+  private async backup(path: string, content: string, why: string): Promise<string | undefined> {
+    const key = `${why}|${path}`;
+    if (this.lastKept.get(key) === content) return undefined;
+    const a = this.app.vault.adapter;
+    const now = new Date();
+    const p2 = (n: number) => String(n).padStart(2, "0");
+    const day = `${now.getFullYear()}-${p2(now.getMonth() + 1)}-${p2(now.getDate())}`;
+    const time = `${p2(now.getHours())}h${p2(now.getMinutes())}m${p2(now.getSeconds())}`;
+    const dir = `${this.histDir()}/${day}`;
+    if (!(await a.exists(this.histDir()))) await a.mkdir(this.histDir());
+    if (!(await a.exists(dir))) await a.mkdir(dir);
+    const name = path.slice(path.lastIndexOf("/") + 1).replace(/\.md$/, "");
+    let file = `${dir}/${time} ${name} (${why}).md`;
+    for (let i = 2; await a.exists(file); i++) file = `${dir}/${time} ${name} (${why}) ${i}.md`;
+    await a.write(file, content);
+    await a.append(`${this.histDir()}/registro.log`, `${day} ${time} | ${why} | ${path}\n`);
+    this.lastKept.set(key, content);
+    return file;
+  }
+  /** Apaga do histórico o que tem mais de 30 dias. */
+  private async pruneHistory() {
+    try {
+      const a = this.app.vault.adapter;
+      if (!(await a.exists(this.histDir()))) return;
+      const limit = Date.now() - 30 * 24 * 3600 * 1000;
+      for (const d of (await a.list(this.histDir())).folders) {
+        const m = /(\d{4})-(\d{2})-(\d{2})$/.exec(d);
+        if (m && new Date(+m[1], +m[2] - 1, +m[3]).getTime() < limit) await a.rmdir(d, true);
+      }
+    } catch (e) { console.error("ClickUp Espelho: limpeza do histórico", e); }
+  }
+  private openHistory() {
+    const base = (this.app.vault.adapter as any).getBasePath?.();
+    if (!base) { new Notice(`ClickUp Espelho: o histórico fica em ${this.histDir()}`); return; }
+    const full = `${base}/${this.histDir()}`;
+    try { (window as any).require("fs").mkdirSync(full, { recursive: true }); (window as any).require("electron").shell.openPath(full); }
+    catch { new Notice(`ClickUp Espelho: o histórico fica em ${full}`); }
+  }
+  /** Nota alterada dos dois lados: avisa, diz qual versão ficou e deixa trocar com um clique. */
+  private conflictNotice(c: ConflictNote) {
+    const other = c.kept === "ClickUp" ? "do Obsidian" : "do ClickUp";
+    this.note(`conflito em "${c.name}": ficou a versão do ${c.kept}; a outra está no histórico`);
+    const msg = `ClickUp Espelho: "${c.name}" foi alterada no Obsidian e no ClickUp ao mesmo tempo. Ficou a versão do ${c.kept}; a versão ${other} está guardada no histórico.` +
+      (c.backup ? ` Clique aqui para trocar pela versão ${other}.` : "");
+    const n = new Notice(msg, 0);
+    if (!c.backup) return;
+    const el: HTMLElement | undefined = (n as any).messageEl ?? (n as any).noticeEl;
+    el?.addEventListener("click", async () => {
+      try {
+        const f = this.app.vault.getAbstractFileByPath(c.path);
+        if (!(f instanceof TFile)) { new Notice("ClickUp Espelho: a nota não está mais nesse lugar; a cópia continua no histórico."); return; }
+        const cur = await this.app.vault.read(f);
+        const saved = await this.app.vault.adapter.read(c.backup!);
+        await this.backup(c.path, cur, "nota-antes-de-trocar");
+        const fm = /^---\r?\n[\s\S]*?\r?\n---\r?\n?/.exec(cur)?.[0] ?? "";
+        await this.app.vault.modify(f, fm + stripFrontmatter(saved));
+        new Notice(`ClickUp Espelho: "${c.name}" voltou para a versão ${other}.`);
+      } catch (e: any) { new Notice(`ClickUp Espelho: não consegui trocar — ${e?.message ?? e}. A cópia continua no histórico.`); }
+    });
+  }
+
   private async ensureFolder(dir: string) {
     let cur = "";
     for (const part of dir.split("/")) {
@@ -221,6 +287,7 @@ export default class ClickUpEspelho extends Plugin {
     let byId: Map<string, string> | null = null;
     return {
       mtime: async (p) => (at(p) as TFile).stat.mtime,
+      backup: (p, content, why) => this.backup(p, content, why),
       readImage: async (name, notePath) => {
         const f = this.app.metadataCache.getFirstLinkpathDest(name, notePath);
         return f instanceof TFile && f.stat.size <= 20 * 1024 * 1024 ? v.readBinary(f) : null;
@@ -512,7 +579,7 @@ export default class ClickUpEspelho extends Plugin {
       if (st.uploaded) new Notice(`ClickUp Espelho: ${st.uploaded} arquivo(s) enviado(s) ao ClickUp.`);
       if (st.added) new Notice(`ClickUp Espelho: ${st.added} card(s) criado(s) no ClickUp.`);
       if (st.archived) new Notice(`ClickUp Espelho: ${st.archived} card(s) arquivado(s) no ClickUp (dá para restaurar por lá).`);
-      if (st.conflicts) new Notice(`ClickUp Espelho: ${st.conflicts} conflito(s) — cópia salva em ${root ? root + "/" : ""}_conflitos.`);
+      for (const c of st.conflictNotes) this.conflictNotice(c);
       if (manual) new Notice(`ClickUp: ${st.pushed} enviadas, ${st.created} novas, ${st.updated} atualizadas, ${st.moved} movidas, ${st.trashed} removidas.`);
     } catch (e: any) {
       console.error("ClickUp Espelho", e);
