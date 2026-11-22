@@ -688,6 +688,14 @@ export async function syncCycle(
           body = nb;
         }
       }
+      // nota gravada por versão antiga (imagem ainda como endereço da web): passa a usar o arquivo do cofre
+      const base = body ?? lraw;
+      const conv = toLocal(base, im);
+      if (conv !== base) {
+        body = conv;
+        const pending = localChanged && lh !== rh && !remoteChanged; // edição local ainda não enviada
+        if (!pending) lBody = hash(toRemote(conv, im));
+      }
       finalBody = body ?? lraw;
       const next = compose(local, t, body);
       if (next !== local) { await port.write(n.path, next); st.updated++; }

@@ -127,8 +127,15 @@ try {
 # ---- 5. Token do ClickUp ----
 Step "Token do ClickUp"
 $data = Join-Path $plug "clickup-espelho\data.json"
-if (Test-Path $data) { Ok "configuracao existente mantida" }
+# configuracao existente: mantida. Mas se ela nao tem token (arquivo vazio ou nunca configurado), pergunta.
+$cur = $null
+if (Test-Path $data) { try { $cur = Read-Json $data } catch { $cur = $null } }
+$curSettings = $null
+if ($cur -and ($cur.PSObject.Properties.Name -contains "settings")) { $curSettings = $cur.settings }
+$hasToken = $curSettings -and ($curSettings.PSObject.Properties.Name -contains "token") -and $curSettings.token
+if ($hasToken) { Ok "configuracao existente mantida (ja tem token)" }
 else {
+  if ($curSettings) { Write-Host "   Este cofre ainda nao tem token gravado." }
   $envFile = Join-Path $here "Clickup.env"
   if (-not $Token -and (Test-Path $envFile)) {
     $m = [regex]::Match([IO.File]::ReadAllText($envFile), "(?m)^CLICKUP_TOKEN=(.*)$")
@@ -136,7 +143,7 @@ else {
   }
   if (-not $Token -and -not $SemPerguntas) {
     Write-Host "   No ClickUp: avatar -> Settings -> Apps -> API Token (comeca com pk_)."
-    $Token = (Read-Host "   Cole o seu token [Enter = configurar depois]").Trim()
+    $Token = (Read-Host "   Cole o seu token [Enter = deixar como esta]").Trim()
   }
   if ($Token) {
     try {
@@ -159,7 +166,18 @@ else {
     if ($spaces.Count) { Ok "space encontrado: $($cfg.spaceName)" }
     else { Warn "nao achei o space '$($cfg.spaceName)' nesta conta. Escolha depois em Configuracoes -> ClickUp Espelho -> Carregar spaces." }
   }
-  Write-Json $data ([pscustomobject]@{ settings = [pscustomobject]@{ token = $Token; spaces = @($spaces) } })
+  if ($curSettings) {
+    # acrescenta ao que ja existe, sem apagar indice nem outras opcoes
+    if ($Token) {
+      $curSettings | Add-Member -NotePropertyName token -NotePropertyValue $Token -Force
+      $oldSpaces = @()
+      if ($curSettings.PSObject.Properties.Name -contains "spaces") { $oldSpaces = @($curSettings.spaces) }
+      if (-not $oldSpaces.Count -and $spaces.Count) { $curSettings | Add-Member -NotePropertyName spaces -NotePropertyValue @($spaces) -Force }
+      Write-Json $data $cur
+    }
+  } else {
+    Write-Json $data ([pscustomobject]@{ settings = [pscustomobject]@{ token = $Token; spaces = @($spaces) } })
+  }
 }
 
 # ---- 6. Plugins ligados ----

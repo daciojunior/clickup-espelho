@@ -1,7 +1,7 @@
 {
   "id": "clickup-espelho",
   "name": "ClickUp Espelho",
-  "version": "0.11.0",
+  "version": "0.11.1",
   "minAppVersion": "1.5.0",
   "description": "Espelha cards do ClickUp como notas, com status em pastas, ícones via Iconic e cópia de prompts em fila.",
   "author": "Dacio",

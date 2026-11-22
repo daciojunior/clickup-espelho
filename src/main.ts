@@ -107,6 +107,7 @@ export default class ClickUpEspelho extends Plugin {
     }
 
     this.codeAt = await this.codeTime();
+    this.checkLastTrace();
 
     this.statusEl = this.addStatusBarItem();
     this.statusEl.setText("ClickUp …");
@@ -154,6 +155,7 @@ export default class ClickUpEspelho extends Plugin {
   }
 
   async persist() {
+    this.trace("persist");
     const d: Data = {
       version: VERSION, settings: this.settings, index: this.index, iconPaths: this.iconPaths, appliedRoot: this.appliedRoot, log: this.log,
     };
@@ -301,6 +303,38 @@ export default class ClickUpEspelho extends Plugin {
       .map((x) => x.it);
   }
 
+  private traceN = 0;
+  private tracePath(): string | null {
+    const base = (this.app.vault.adapter as any).getBasePath?.();
+    return base ? `${base}/${this.manifest.dir}/trace.log` : null;
+  }
+  /** Diagnóstico da aba de configurações. Nunca recebe o token nem conteúdo de notas. */
+  trace(msg: string) {
+    if (++this.traceN > 600) return;
+    try {
+      const f = this.tracePath();
+      if (f) (window as any).require("fs").appendFileSync(f, `${new Date().toISOString()} ${msg}\n`);
+    } catch { /* só diagnóstico */ }
+  }
+  /** Ao iniciar: se a aba de configurações travou da última vez, oferece o diagnóstico para copiar. */
+  private checkLastTrace() {
+    try {
+      const f = this.tracePath();
+      const fs = (window as any).require("fs");
+      if (!f || !fs.existsSync(f)) return;
+      const lines: string[] = fs.readFileSync(f, "utf8").split("\n").filter(Boolean);
+      fs.writeFileSync(f, "");
+      const last = (needle: string) => { for (let i = lines.length - 1; i >= 0; i--) if (lines[i].includes(needle)) return i; return -1; };
+      const opened = last("display: início");
+      if (opened < 0 || last("display: estável") > opened) return; // não abriu, ou abriu e ficou estável
+      const info = `ClickUp Espelho ${this.manifest.version} | Obsidian ${(window as any).require?.("obsidian")?.apiVersion ?? "?"} | ${navigator.platform}`;
+      const text = [info, ...lines.slice(-120)].join("\n");
+      const n = new Notice("ClickUp Espelho: as configurações travaram da última vez. Clique aqui para copiar o diagnóstico e cole no chat do Claude.", 0);
+      const el: HTMLElement | undefined = (n as any).messageEl ?? (n as any).noticeEl;
+      el?.addEventListener("click", () => { navigator.clipboard.writeText(text).then(() => new Notice("Diagnóstico copiado.")); });
+    } catch { /* só diagnóstico */ }
+  }
+
   report(msg: string) { if (this.note(msg)) this.persist().catch(() => {}); }
 
   /** Guarda um problema no data.json (sem repetir o último). Devolve true se for novo. */
@@ -338,6 +372,7 @@ export default class ClickUpEspelho extends Plugin {
 
   /** Marca as abas de notas espelhadas, para o CSS esconder o bloco de propriedades delas. */
   markNotes() {
+    this.trace("markNotes");
     const paths = this.settings.hideProps ? new Set(Object.values(this.index).map((e) => e.path)) : new Set<string>();
     for (const leaf of this.app.workspace.getLeavesOfType("markdown")) {
       const v: any = leaf.view;
@@ -639,11 +674,30 @@ class CopyView extends ItemView {
 class Tab extends PluginSettingTab {
   constructor(app: App, private plugin: ClickUpEspelho) { super(app, plugin); }
 
+  private opens: number[] = [];
+  private ready = false;
+  private readyTimer = 0;
+
   display() {
     const p = this.plugin;
-    try { this.build(); }
+    p.trace("display: início");
+    // proteção: se o Obsidian pedir para montar a aba várias vezes seguidas, paramos em vez de travar a janela
+    const now = Date.now();
+    this.opens = this.opens.filter((t) => now - t < 3000);
+    this.opens.push(now);
+    if (this.opens.length > 3) {
+      p.trace("display: laço detectado, montagem cancelada");
+      try { this.containerEl.setText("ClickUp Espelho: configurações pausadas por proteção contra travamento. Feche esta janela e abra de novo."); } catch { /* nada */ }
+      return;
+    }
+    // os campos só passam a gravar depois que a aba está montada e parada (ignora mudanças feitas por código)
+    this.ready = false;
+    window.clearTimeout(this.readyTimer);
+    this.readyTimer = window.setTimeout(() => { this.ready = true; p.trace("display: estável"); }, 400);
+    try { this.build(); p.trace("display: montada"); }
     catch (e: any) {
       // um erro aqui deixava o menu preso e a janela de configurações sem resposta
+      p.trace(`display: erro ${e?.message ?? e}`);
       p.report(`configurações: ${e?.stack ?? e?.message ?? e}`);
       try { this.containerEl.setText(`ClickUp Espelho: erro ao montar as configurações — ${e?.message ?? e}`); } catch { /* nada */ }
     }
@@ -654,6 +708,7 @@ class Tab extends PluginSettingTab {
     const el = this.containerEl;
     el.empty();
 
+    p.trace("build 1");
     new Setting(el)
       .setName("Token do ClickUp")
       .setDesc("ClickUp → Configurações → Apps → API Token. Fica guardado no cofre de segredos do Obsidian, quando disponível.")
@@ -661,9 +716,10 @@ class Tab extends PluginSettingTab {
         t.inputEl.type = "password";
         t.setPlaceholder("pk_…");
         // não preencher o campo por código: no Obsidian 1.15 isso travava a janela de configurações
-        p.getToken().then((v) => t.setPlaceholder(v ? "token salvo (digite para trocar)" : "pk_…"));
+        p.trace("token: lendo");
+        p.getToken().then((v) => { p.trace("token: lido"); t.setPlaceholder(v ? "token salvo (digite para trocar)" : "pk_…"); p.trace("token: placeholder ok"); });
         let busy = false;
-        t.onChange(async (v) => {
+        t.onChange(async (v) => { if (!this.ready) { p.trace("onChange ignorado #1"); return; } p.trace("onChange #1");
           v = v.trim();
           if (busy || !v.startsWith("pk_") || v.length < 20) return; // só grava um token completo, digitado ou colado
           busy = true;
@@ -671,55 +727,64 @@ class Tab extends PluginSettingTab {
         });
       });
 
+    p.trace("build 2");
     new Setting(el)
       .setName("Pasta raiz")
       .setDesc("Pasta do cofre onde os spaces são espelhados. Vazio = direto na raiz do cofre.")
-      .addText((t) => t.setValue(p.settings.root).onChange(async (v) => { p.settings.root = v.trim(); await p.persist(); }));
+      .addText((t) => t.setValue(p.settings.root).onChange(async (v) => { if (!this.ready) { p.trace("onChange ignorado #2"); return; } p.trace("onChange #2"); p.settings.root = v.trim(); await p.persist(); }));
 
+    p.trace("build 3");
     new Setting(el)
       .setName("Enviar alterações ao ClickUp")
       .setDesc("Editar, mover de pasta de status, renomear e mudar status/prioridade atualiza o card. Nota nova numa pasta de status vira card; dentro da pasta de um card vira subtarefa. Arrastar um card para a pasta de outro troca o pai; para uma pasta de status de outra lista, troca a lista. Subtarefa solta numa pasta de status vira card solto (é recriada e a antiga é arquivada). Apagar a nota arquiva o card. Desligado = só leitura.")
-      .addToggle((t) => t.setValue(p.settings.push).onChange(async (v) => { p.settings.push = v; await p.persist(); }));
+      .addToggle((t) => t.setValue(p.settings.push).onChange(async (v) => { if (!this.ready) { p.trace("onChange ignorado #3"); return; } p.trace("onChange #3"); p.settings.push = v; await p.persist(); }));
 
+    p.trace("build 4");
     new Setting(el)
       .setName("Subtarefas seguem o status do pai")
       .setDesc("Quando o card pai muda de status, o plugin muda as subtarefas para o mesmo status no ClickUp. Só funciona com o Obsidian aberto.")
-      .addToggle((t) => t.setValue(p.settings.cascade).onChange(async (v) => { p.settings.cascade = v; await p.persist(); }));
+      .addToggle((t) => t.setValue(p.settings.cascade).onChange(async (v) => { if (!this.ready) { p.trace("onChange ignorado #4"); return; } p.trace("onChange #4"); p.settings.cascade = v; await p.persist(); }));
 
+    p.trace("build 5");
     new Setting(el)
       .setName("Ordem dos cards como no ClickUp")
       .setDesc("Dentro de cada pasta, as notas aparecem na ordem em que os cards estão no ClickUp. Para reordenar, arraste no ClickUp. Desligado = ordem do Obsidian.")
-      .addToggle((t) => t.setValue(p.settings.clickupOrder).onChange(async (v) => { p.settings.clickupOrder = v; await p.persist(); p.sync(true); }));
+      .addToggle((t) => t.setValue(p.settings.clickupOrder).onChange(async (v) => { if (!this.ready) { p.trace("onChange ignorado #5"); return; } p.trace("onChange #5"); p.settings.clickupOrder = v; await p.persist(); p.sync(true); }));
 
+    p.trace("build 6");
     new Setting(el)
       .setName("Títulos de status como no ClickUp")
       .setDesc("Mostra as pastas de status em maiúsculas e sem número (BACKLOG, TO DO…). O nome real da pasta continua com o número, para manter a ordem do quadro.")
-      .addToggle((t) => t.setValue(p.settings.statusTitles).onChange(async (v) => { p.settings.statusTitles = v; await p.persist(); p.sync(true); }));
+      .addToggle((t) => t.setValue(p.settings.statusTitles).onChange(async (v) => { if (!this.ready) { p.trace("onChange ignorado #6"); return; } p.trace("onChange #6"); p.settings.statusTitles = v; await p.persist(); p.sync(true); }));
 
     const csv = (v: string) => v.split(",").map((x) => x.trim()).filter(Boolean);
+    p.trace("build 7");
     new Setting(el)
       .setName("Esconder propriedades nas notas")
       .setDesc("Esconde o bloco Properties nas notas espelhadas. O clickup_id continua gravado no arquivo: é ele que liga a nota ao card.")
-      .addToggle((t) => t.setValue(p.settings.hideProps).onChange(async (v) => { p.settings.hideProps = v; await p.persist(); p.markNotes(); }));
+      .addToggle((t) => t.setValue(p.settings.hideProps).onChange(async (v) => { if (!this.ready) { p.trace("onChange ignorado #7"); return; } p.trace("onChange #7"); p.settings.hideProps = v; await p.persist(); p.markNotes(); }));
 
+    p.trace("build 8");
     new Setting(el)
       .setName("Listas ocultas")
       .setDesc("Listas do ClickUp que não aparecem no Obsidian, separadas por vírgula. Os cards continuam intactos no ClickUp.")
-      .addText((t) => t.setValue(p.settings.hiddenLists.join(", ")).onChange(async (v) => { p.settings.hiddenLists = csv(v); await p.persist(); }));
+      .addText((t) => t.setValue(p.settings.hiddenLists.join(", ")).onChange(async (v) => { if (!this.ready) { p.trace("onChange ignorado #8"); return; } p.trace("onChange #8"); p.settings.hiddenLists = csv(v); await p.persist(); }));
 
+    p.trace("build 9");
     new Setting(el)
       .setName("Pasta de trabalho")
       .setDesc("Nome da pasta à parte e os status que ficam dentro dela, na ordem (separados por vírgula). Os demais status seguem o ClickUp.")
-      .addText((t) => t.setValue(p.settings.workingName).onChange(async (v) => { p.settings.workingName = v.trim(); await p.persist(); }))
-      .addText((t) => t.setValue(p.settings.workingStatuses.join(", ")).onChange(async (v) => { p.settings.workingStatuses = csv(v).map((x) => x.toLowerCase()); await p.persist(); }));
+      .addText((t) => t.setValue(p.settings.workingName).onChange(async (v) => { if (!this.ready) { p.trace("onChange ignorado #9"); return; } p.trace("onChange #9"); p.settings.workingName = v.trim(); await p.persist(); }))
+      .addText((t) => t.setValue(p.settings.workingStatuses.join(", ")).onChange(async (v) => { if (!this.ready) { p.trace("onChange ignorado #10"); return; } p.trace("onChange #10"); p.settings.workingStatuses = csv(v).map((x) => x.toLowerCase()); await p.persist(); }));
 
+    p.trace("build 10");
     new Setting(el)
       .setName("Cores por status")
       .setDesc("Uma por linha: status = cor. Cores: red, orange, yellow, green, cyan, blue, purple, pink, gray ou #hex. Status fora da lista usam a cor do ClickUp.")
       .addTextArea((t) => {
         t.inputEl.rows = 5;
         t.setValue(Object.entries(p.settings.statusColors).map(([k, v]) => `${k} = ${v}`).join("\n"));
-        t.onChange(async (v) => {
+        t.onChange(async (v) => { if (!this.ready) { p.trace("onChange ignorado #11"); return; } p.trace("onChange #11");
           const map: Record<string, string> = {};
           for (const line of v.split("\n")) {
             const i = line.indexOf("=");
@@ -730,30 +795,34 @@ class Tab extends PluginSettingTab {
         });
       });
 
+    p.trace("build 11");
     new Setting(el)
       .setName("Intervalo (segundos)")
       .setDesc("De quanto em quanto tempo consultar o ClickUp. Mínimo 3.")
-      .addText((t) => t.setValue(String(p.settings.intervalSec)).onChange(async (v) => {
+      .addText((t) => t.setValue(String(p.settings.intervalSec)).onChange(async (v) => { if (!this.ready) { p.trace("onChange ignorado #12"); return; } p.trace("onChange #12");
         p.settings.intervalSec = Math.max(3, Number(v) || 5);
         await p.persist();
         p.restartTimer();
       }));
 
+    p.trace("build 12");
     new Setting(el)
       .setName("Separador entre prompts")
-      .addText((t) => t.setValue(p.settings.separator).onChange(async (v) => { p.settings.separator = v; await p.persist(); }));
+      .addText((t) => t.setValue(p.settings.separator).onChange(async (v) => { if (!this.ready) { p.trace("onChange ignorado #13"); return; } p.trace("onChange #13"); p.settings.separator = v; await p.persist(); }));
 
+    p.trace("build 13");
     new Setting(el)
       .setName("Incluir o nome do card ao copiar")
-      .addToggle((t) => t.setValue(p.settings.includeTitle).onChange(async (v) => { p.settings.includeTitle = v; await p.persist(); }));
+      .addToggle((t) => t.setValue(p.settings.includeTitle).onChange(async (v) => { if (!this.ready) { p.trace("onChange ignorado #14"); return; } p.trace("onChange #14"); p.settings.includeTitle = v; await p.persist(); }));
 
+    p.trace("build 14");
     new Setting(el).setName("Spaces espelhados").setHeading();
     const box = el.createDiv();
     const draw = (all: { teamId: string; teamName: string; id: string; name: string }[]) => {
       box.empty();
       for (const s of all)
         new Setting(box).setName(s.name).setDesc(`Workspace: ${s.teamName}`).addToggle((t) =>
-          t.setValue(p.settings.spaces.some((x) => x.id === s.id)).onChange(async (on) => {
+          t.setValue(p.settings.spaces.some((x) => x.id === s.id)).onChange(async (on) => { if (!this.ready) { p.trace("onChange ignorado #15"); return; } p.trace("onChange #15");
             p.settings.spaces = p.settings.spaces.filter((x) => x.id !== s.id);
             if (on) p.settings.spaces.push({ teamId: s.teamId, id: s.id, name: s.name });
             await p.persist();
@@ -761,6 +830,7 @@ class Tab extends PluginSettingTab {
           }));
     };
     for (const s of p.settings.spaces) new Setting(box).setName(s.name).setDesc("Espelhado");
+    p.trace("build 15");
     new Setting(el).addButton((b) => b.setButtonText("Carregar spaces do ClickUp").onClick(async () => {
       try { draw(await fetchTeamsAndSpaces(http, await p.getToken())); }
       catch (e: any) { new Notice(`ClickUp Espelho: ${e?.message ?? e}`); }

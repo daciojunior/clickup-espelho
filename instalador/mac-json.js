@@ -27,8 +27,19 @@ function main(argv) {
         for (const sp of readJson(rest[2] + "/sp_" + t.id + ".json", {}).spaces || [])
           if (sp.name === cfg.spaceName) spaces.push({ teamId: String(t.id), id: String(sp.id), name: sp.name });
     }
-    writeJson(file, { settings: { token: rest[1] || "", spaces } });
+    // acrescenta ao que já existe, sem apagar índice nem outras opções
+    let cur = null;
+    try { cur = readJson(file, null); } catch (e) { cur = null; }
+    if (cur && cur.settings) {
+      if (rest[1]) {
+        cur.settings.token = rest[1];
+        if (!(cur.settings.spaces || []).length && spaces.length) cur.settings.spaces = spaces;
+        writeJson(file, cur);
+      }
+    } else writeJson(file, { settings: { token: rest[1] || "", spaces } });
     return String(spaces.length);
+  } else if (cmd === "hastoken") {
+    try { const d = readJson(file, null); return d && d.settings && d.settings.token ? "1" : "0"; } catch (e) { return "0"; }
   } else if (cmd === "vaults") { // cofres conhecidos do Obsidian, do mais recente para o mais antigo
     return Object.values(readJson(file, {}).vaults || {}).sort((a, b) => (b.ts || 0) - (a.ts || 0)).map((v) => v.path).join(String.fromCharCode(10));
   } else if (cmd === "teamids") {

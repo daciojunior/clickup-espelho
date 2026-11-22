@@ -7,6 +7,13 @@ here = os.path.dirname(os.path.abspath(__file__))
 out = os.path.join(os.path.dirname(here), "instalador-clinical-frontier.zip")
 skip = {"empacotar.py", "Clickup.env", "config.exemplo.json"}  # o token nunca entra no pacote
 
+# o pacote sempre leva a versão recém-compilada do ClickUp Espelho
+import shutil
+root = os.path.dirname(here)
+os.makedirs(os.path.join(here, "plugins", "clickup-espelho"), exist_ok=True)
+for f in ("main.js", "manifest.json", "styles.css"):
+    shutil.copyfile(os.path.join(root, f), os.path.join(here, "plugins", "clickup-espelho", f))
+
 with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
     for root, _, files in os.walk(here):
         for f in sorted(files):

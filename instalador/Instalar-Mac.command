@@ -112,15 +112,17 @@ fi
 step "Token do ClickUp"
 DATA="$PLUG/clickup-espelho/data.json"
 TOKEN="${TOKEN:-}"
-if [ -f "$DATA" ]; then ok "configuração existente mantida"
+# configuração existente: mantida. Mas se ela não tem token (arquivo vazio ou nunca configurado), pergunta.
+if [ "$(json hastoken "$DATA")" = "1" ]; then ok "configuração existente mantida (já tem token)"
 else
+  [ -f "$DATA" ] && echo "   Este cofre ainda não tem token gravado."
   if [ -z "$TOKEN" ] && [ -f "$HERE/Clickup.env" ]; then
     TOKEN="$(grep -m1 '^CLICKUP_TOKEN=' "$HERE/Clickup.env" | cut -d= -f2- | tr -d '\r' | xargs)"
     [ -n "$TOKEN" ] && echo "   lido de Clickup.env"
   fi
   if [ -z "$TOKEN" ] && [ "${SEM_PERGUNTAS:-}" != "1" ]; then
     echo "   No ClickUp: avatar -> Settings -> Apps -> API Token (começa com pk_)."
-    read -r -p "   Cole o seu token [Enter = configurar depois]: " TOKEN
+    read -r -p "   Cole o seu token [Enter = deixar como está]: " TOKEN
     TOKEN="$(echo "$TOKEN" | xargs)"
   fi
   if [ -n "$TOKEN" ]; then

@@ -5,7 +5,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { archiveTask, createTask, fetchSpace, fetchTasks, getTask, updateTask, type Changes, type Http, type NewTask, type Task, uploadAttachment, type RawPost } from "../src/clickup";
-import { buildPlan, parseFm, stripFrontmatter, syncCycle, type Api, type Index, type VaultPort } from "../src/core";
+import { buildPlan, hash, parseFm, stripFrontmatter, syncCycle, type Api, type Index, type VaultPort } from "../src/core";
 
 const token = process.env.CLICKUP_TOKEN!;
 const spaceId = process.env.SPACE_ID!;
@@ -439,6 +439,34 @@ check("…e fica estável", quietStats(st) && moves.length === 1, JSON.stringify
     read().endsWith("depois, editado no ClickUp") && downloads.length === nd && uploads.length === 1 && pushes.length === 0, JSON.stringify(read()));
   st = await casc();
   check("…e fica estável", quietStats(st) && pushes.length === 0 && uploads.length === 1, JSON.stringify(st));
+
+  // nota gravada por versão antiga: imagem ainda como endereço da web
+  const Y = L.tasks.find((t) => t.id !== X.id && !t.parent && index[t.id] && !L.tasks.some((k) => k.parent === t.id))!;
+  const rawY = `antes
+
+![image.png](${H}/dddddddd-2222-3333-4444-555555555555/image.png)
+
+depois`;
+  Y.markdown_description = rawY;
+  const yp = index[Y.id].path;
+  const fmY = () => { const c = fs.readFileSync(abs(yp), "utf8"); return c.slice(0, c.indexOf("\n---\n", 3) + 5); };
+  const wantY = "antes\n\n![[image dddddddd.png]]\n\ndepois";
+  fs.writeFileSync(abs(yp), `${fmY()}\n${rawY}\n`);
+  index[Y.id].lBody = index[Y.id].rBody = hash(rawY);
+  delete index[Y.id].files;
+  st = await casc();
+  const bodyY = () => stripFrontmatter(fs.readFileSync(abs(index[Y.id].path), "utf8"));
+  check("nota de versão antiga: endereço da imagem vira arquivo do cofre, sem enviar nada",
+    bodyY() === wantY && fs.existsSync(abs("image dddddddd.png")) && pushes.length === 0, JSON.stringify(bodyY()));
+  st = await casc();
+  check("…e fica estável", quietStats(st) && pushes.length === 0, JSON.stringify(st) + JSON.stringify(pushes));
+  // mesmo caso sem índice (dados do plugin perdidos)
+  delete index[Y.id];
+  fs.writeFileSync(abs(yp), fs.readFileSync(abs(yp), "utf8").replace("![[image dddddddd.png]]", `![image.png](${H}/dddddddd-2222-3333-4444-555555555555/image.png)`));
+  st = await casc();
+  check("…e também quando o índice foi perdido", bodyY() === wantY && pushes.length === 0 && st.conflicts === 0, JSON.stringify(bodyY()));
+  st = await casc();
+  check("…e fica estável", quietStats(st) && pushes.length === 0, JSON.stringify(st) + JSON.stringify(pushes));
 }
 
 // ---- status mudam no ClickUp: renomear, criar, reordenar, apagar ----
