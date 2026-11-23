@@ -29,7 +29,7 @@ interface Settings {
 }
 interface Data { version: number; settings: Settings; index: Index; iconPaths: string[]; appliedRoot: string; log?: string[] }
 
-const VERSION = 3;
+const VERSION = 4;
 const STRUCTURE_TTL = 30 * 1000; // status criados, apagados, renomeados ou reordenados aparecem em até 30 s
 const QUIET_MS = 2000;
 const CREATE_QUIET_MS = 5000;
@@ -47,7 +47,7 @@ const DEFAULTS: Settings = {
   clickupOrder: true,
   hiddenLists: ["Administração"],
   workingName: "Working",
-  workingStatuses: ["in progress", "complete", "archive"],
+  workingStatuses: ["to do", "in progress", "complete", "archive"],
   hideProps: true,
 };
 const SECRET_ID = "clickup-token";
@@ -111,6 +111,12 @@ export default class ClickUpEspelho extends Plugin {
 
     // v3 passou a trazer documentos anexados: relê os anexos de cada card uma vez
     if ((d.version ?? 1) < 3) for (const e of Object.values(this.index)) delete e.updated;
+
+    // v4: o status TO DO entra na pasta de trabalho, logo antes de IN PROGRESS
+    if ((d.version ?? 1) < 4 && !this.settings.workingStatuses.includes("to do")) {
+      const w = this.settings.workingStatuses, i = w.indexOf("in progress");
+      w.splice(i < 0 ? 0 : i, 0, "to do");
+    }
 
     this.codeAt = await this.codeTime();
     this.checkLastTrace();
