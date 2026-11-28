@@ -53,12 +53,27 @@ const DEFAULTS: Settings = {
 const SECRET_ID = "clickup-token";
 const VIEW = "clickup-espelho-copiar";
 
+// O ClickUp permite 100 requisições por minuto por token, somando todas as máquinas que usam o mesmo token.
+// A cada resposta ele informa quanto resta e quando a conta zera; guardamos isso para não estourar.
+const limit = { remaining: Infinity, resetAt: 0 };
+const LOW_BUDGET = 30; // abaixo disso, as rodadas automáticas esperam a conta zerar
+const IDLE_MS = 30 * 1000; // Obsidian em segundo plano sincroniza só a cada 30 s
+function readLimit(headers: Record<string, string> | undefined) {
+  const h: Record<string, string> = {};
+  for (const [k, v] of Object.entries(headers ?? {})) h[k.toLowerCase()] = String(v);
+  const rem = Number(h["x-ratelimit-remaining"]), reset = Number(h["x-ratelimit-reset"]);
+  if (Number.isFinite(rem) && h["x-ratelimit-remaining"] !== undefined) limit.remaining = rem;
+  if (Number.isFinite(reset) && reset > 0) limit.resetAt = reset * 1000;
+}
 const http: Http = async (url, token, method = "GET", body) => {
   const r = await requestUrl({
     url, method, throw: false,
     headers: { Authorization: token },
     ...(body === undefined ? {} : { contentType: "application/json", body: JSON.stringify(body) }),
   });
+  readLimit(r.headers);
+  if (r.status === 429 && limit.resetAt < Date.now()) limit.resetAt = Date.now() + 60000;
+  if (r.status === 429) limit.remaining = 0;
   let json: any = null;
   try { json = r.json; } catch { /* corpo não-JSON */ }
   return { status: r.status, json };
@@ -85,6 +100,7 @@ export default class ClickUpEspelho extends Plugin {
   private syncing = false;
   private syncStarted = 0;
   private lastError = "";
+  private lastSync = 0;
   private timer: number | null = null;
   private statusEl!: HTMLElement;
 
@@ -508,8 +524,16 @@ export default class ClickUpEspelho extends Plugin {
       if (manual) new Notice("ClickUp Espelho: informe o token e escolha os spaces nas configurações.");
       return;
     }
+    if (!manual) {
+      // em segundo plano não há edição local: sincroniza mais devagar para sobrar limite para a máquina em uso
+      if (!document.hasFocus() && Date.now() - this.lastSync < IDLE_MS) return;
+      if (limit.remaining < LOW_BUDGET && Date.now() < limit.resetAt) {
+        this.statusEl.setText("ClickUp ⏸ aguardando o limite do ClickUp");
+        return;
+      }
+    }
     this.syncing = true;
-    this.syncStarted = Date.now();
+    this.syncStarted = this.lastSync = Date.now();
     this.statusEl.setText(this.statusEl.getText().replace(/^ClickUp …?$/, "ClickUp ↻"));
     try {
       const root = this.settings.root.trim() ? normalizePath(this.settings.root.trim()) : "";
@@ -591,8 +615,10 @@ export default class ClickUpEspelho extends Plugin {
       console.error("ClickUp Espelho", e);
       const msg = String(e?.message ?? e);
       if (this.note(`sincronização: ${msg}`)) await this.persist().catch(() => {});
-      this.statusEl.setText(`ClickUp ⚠ ${msg.slice(0, 60)}`);
-      if (manual || msg !== this.lastError) new Notice(`ClickUp Espelho: ${msg}`, 10000);
+      // limite atingido: não é erro do usuário; o plugin espera a conta zerar e continua sozinho
+      const waiting = /limite de requisições/.test(msg) && !manual;
+      this.statusEl.setText(waiting ? "ClickUp ⏸ aguardando o limite do ClickUp" : `ClickUp ⚠ ${msg.slice(0, 60)}`);
+      if (!waiting && (manual || msg !== this.lastError)) new Notice(`ClickUp Espelho: ${msg}`, 10000);
       this.lastError = msg;
     } finally {
       this.syncing = false;
