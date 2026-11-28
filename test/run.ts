@@ -563,12 +563,13 @@ depois`;
     !!pw.statusDirs[`${W}/1 - ${fixed[0]}`] && !!pw.statusDirs[`${W}/2 - ${fixed[1]}`] && dirs.length === L.statuses.length,
     JSON.stringify(Object.keys(pw.statusDirs)));
   const wc = async () => { pushes.length = 0; archived.length = 0; return (await syncCycle(port, fake, ROOT, only, index, wopts)).stats; };
-  const n2 = L2.tasks.filter((t) => index[t.id]).length;
+  const others = space.lists.filter((l) => l !== L).flatMap((l) => l.tasks); // todas as listas fora de L ficam ocultas
+  const n2 = others.filter((t) => index[t.id]).length;
   st = await wc();
   const inW = L.tasks.filter((t) => !t.parent && fixed.includes(t.status.status));
   check("Working: cards mudam de pasta sem enviar nada; lista oculta sai do cofre sem arquivar", pushes.length === 0 && st.archived === 0 &&
     st.added === 0 && !st.errors.length && inW.length > 0 && inW.every((t) => index[t.id].path.startsWith(W + "/")) &&
-    st.trashed === n2 && n2 > 0 && L2.tasks.every((t) => !index[t.id]) && archived.length === 0, JSON.stringify(st));
+    st.trashed === n2 && n2 > 0 && others.every((t) => !index[t.id]) && archived.length === 0, JSON.stringify(st));
   st = await wc();
   check("…e fica estável", quietStats(st) && pushes.length === 0, JSON.stringify(st));
   const mv = L.tasks.find((t) => !t.parent && !fixed.includes(t.status.status) && !L.tasks.some((k) => k.parent === t.id))!;
